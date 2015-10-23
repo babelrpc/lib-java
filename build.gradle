@@ -1,0 +1,226 @@
+buildscript {
+    repositories {
+        maven { url "http://repo.springsource.org/plugins-release" }
+    }
+    dependencies {
+        classpath 'org.springframework.build.gradle:propdeps-plugin:0.0.6'
+        classpath 'net.saliman:gradle-cobertura-plugin:2.2.4'
+    }
+}
+
+configure(allprojects - rootProject) { project ->
+
+    group = group
+    version = version
+
+    apply plugin: "java"
+    apply plugin: "groovy"
+
+    repositories {
+        maven { url artifactoryRepoUrl }
+        mavenLocal()
+        mavenCentral()
+    }
+
+}
+
+//Root project configuration where root project is simply a container
+configure(rootProject) {
+
+    apply plugin: 'cobertura'
+    apply plugin: 'java'
+
+    repositories {
+        mavenLocal()
+        mavenCentral()
+    }
+
+    dependencies {
+        testRuntime 'net.sourceforge.cobertura:cobertura:2.0.3'
+    }
+
+    def babelProjects = subprojects.findAll{
+        it.name != "testUtils"
+    }
+
+    cobertura {
+        coverageIgnoreTrivial = true
+        coverageFormats = ['html', 'xml']
+        coverageMergeDatafiles = babelProjects.collect {
+            new File(it.projectDir, '/build/cobertura/cobertura.ser')
+        }
+        coverageSourceDirs << babelProjects.collect {
+            it.sourceSets.main.java.srcDirs
+        }
+    }
+    test.dependsOn(babelProjects.test)
+
+    task allJavadoc(type: Javadoc) {
+        source babelProjects.collect { project -> project.sourceSets.main.allJava }
+        destinationDir = new File(buildDir, 'javadoc')
+        classpath = files(babelProjects.collect { project ->
+            project.sourceSets.main.compileClasspath
+        })
+    }
+
+    task wrapper(type: Wrapper) {
+        description = "Generates gradlew[.bat] scripts"
+        gradleVersion = "2.2.1"
+    }
+
+}
+
+//Configuration common to all subprojects
+configure(subprojects - project(":testUtils")) { subproject ->
+
+    apply plugin: 'maven'
+
+    sourceCompatibility = 1.7
+    targetCompatibility = 1.7
+
+    dependencies {
+        testCompile "junit:junit:4.11"
+        testCompile 'org.easymock:easymock:3.2'
+        testCompile 'org.hamcrest:hamcrest-all:1.3'
+        testCompile 'org.codehaus.groovy:groovy-all:2.3.0'
+        testCompile 'org.spockframework:spock-core:0.7-groovy-2.0'
+        testCompile (project(':testUtils'))
+    }
+
+    def theMavenUser = rootProject.hasProperty('theMavenUser') ? theMavenUser : "username"
+    def theMavenPassword = rootProject.hasProperty('theMavenPassword') ? theMavenUser : "pwd"
+
+    uploadArchives {
+        repositories.mavenDeployer {
+            repository(url: "TBD") {
+                authentication(userName: theMavenUser, password: theMavenPassword)
+            }
+            snapshotRepository(url: "TBD") {
+                authentication(userName: theMavenUser, password: theMavenPassword)
+            }
+        }
+    }
+
+    task sourcesJar(type: Jar, dependsOn: classes) {
+        classifier = 'sources'
+        from sourceSets.main.allSource
+    }
+
+    task javadocJar(type: Jar, dependsOn: javadoc) {
+        classifier = 'javadoc'
+        from javadoc.destinationDir
+    }
+
+    artifacts {
+        archives sourcesJar
+        archives javadocJar
+    }
+
+    jar {
+        manifest.attributes["Created-By"] = "${System.getProperty("java.version")} (${System.getProperty("java.specification.vendor")})"
+        manifest.attributes["Implementation-Title"] = project.name
+        manifest.attributes["Implementation-Version"] = project.version
+    }
+
+    apply plugin: 'cobertura'
+
+    task allTests(type: Test, dependsOn: ['coberturaReport',  'test']) {
+    }
+
+    // Disable the test report for the individual test task
+    test {
+        reports.html.enabled = true
+        reports.junitXml.enabled = true
+    }
+
+    //Set javadoc output to go to the distro dir
+    javadoc {
+        destinationDir = file(javadocDir)
+    }
+
+    //Copying a couple of artifacts to the distro dir
+    jar.doLast {
+        copy {
+            from libsDir
+            into distroDir
+        }
+        copy {
+            from configurations.runtime
+            into dependencyLibDir
+            exclude '*servlet*.jar'
+        }
+    }
+
+    //Since we copy some stuff into the distro dir, we want to clean out old artifacts.
+    clean.doLast {
+        file(dependencyLibDir).deleteDir()
+        file(javadocDir).deleteDir()
+    }
+
+    //Make sure we generate javadoc every time we build
+    jar.dependsOn javadoc
+
+}
+
+//Babel library configuration
+project ("babel") {
+
+    apply plugin: "propdeps" //Gives us the 'provided' dependency scope
+
+    //Extending from testCompile and testRuntime allows us to pull in the
+    //testing frameworks and supporting jars defined as testCompile dependencies
+    configurations {
+        integrationCompile.extendsFrom testCompile
+        integrationRuntime.extendsFrom testRuntime
+    }
+
+    dependencies {
+        compile "com.google.code.gson:gson:2.2.4"
+        compile "joda-time:joda-time:2.2"
+        compile "commons-codec:commons-codec:1.8"
+        compile 'org.apache.bcel:bcel:5.2'
+        provided "javax.servlet:servlet-api:2.5"
+        testCompile "org.springframework:spring-test:3.2.4.RELEASE"
+    }
+
+    sourceSets {
+        main {
+            java {
+                srcDirs += 'src/main/gen-java'
+            }
+        }
+        integration {
+            groovy.srcDir file('src/integration/groovy')
+            compileClasspath = sourceSets.main.output + configurations.integrationCompile
+            runtimeClasspath = output + sourceSets.main.output + configurations.testRuntime
+        }
+    }
+
+    task integration(type: Test, dependsOn: 'coberturaReport') {
+        testClassesDir = sourceSets.integration.output.classesDir
+        classpath = sourceSets.integration.runtimeClasspath
+    }
+
+    //Make sure we run integration test for babel project when allTests is executed.
+    allTests.dependsOn integration
+}
+
+//Babel-Spring library configuration
+project("babel-spring") {
+
+    description = "Babel Spring"
+    def springVersion = '4.0.6.RELEASE'
+
+    dependencies {
+        compile "org.springframework:spring-beans:${springVersion}"
+        compile "org.springframework:spring-context:${springVersion}"
+        compile(project(":babel"))
+    }
+}
+
+project("testUtils") {
+    dependencies {
+        compile(project(":babel"))
+        compile 'org.hamcrest:hamcrest-all:1.3'
+    }
+}

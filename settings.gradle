@@ -1,0 +1,9 @@
+rootProject.name = 'babel-java'
+
+include 'spring'
+rootProject.children.find { it.name == 'spring' }.name = 'babel-spring'
+
+include 'core'
+rootProject.children.find { it.name == 'core' }.name = 'babel'
+
+include 'testUtils'
